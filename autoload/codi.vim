@@ -680,10 +680,10 @@ endfunction
 
 function! s:nvim_codi_output_to_virtual_text(bufnr, lines)
   " Iterate through the result and print using virtual text
+  call nvim_buf_clear_namespace(a:bufnr, s:virtual_text_namespace, 0, -1)
   let i = 0
   for line in split(a:lines, "\n", 1)
     if len(line)
-      let extmarks = s:get_codi("extmarks")
       let opts = { 'virt_text': [[g:codi#virtual_text_prefix . line, "CodiVirtualText"]] }
       if exists('g:codi#virtual_text_pos')
         if type(g:codi#virtual_text_pos) == v:t_number
@@ -692,14 +692,8 @@ function! s:nvim_codi_output_to_virtual_text(bufnr, lines)
           let opts.virt_text_pos = g:codi#virtual_text_pos
         endif
       endif
-      if has_key(extmarks, i)
-        let opts.id = extmarks[i]
-      endif
 
-      let extmarks[i] = nvim_buf_set_extmark(a:bufnr, s:virtual_text_namespace, i, 0, opts)
-      call s:let_codi("extmarks", extmarks)
-    else
-      call nvim_buf_clear_namespace(a:bufnr, s:virtual_text_namespace, i, i+1)
+      call nvim_buf_set_extmark(a:bufnr, s:virtual_text_namespace, i, 0, opts)
     endif
     let i += 1
   endfor
@@ -750,15 +744,12 @@ function! s:codi_spawn(filetype)
   " Store the interpreter we're using
   call s:let_codi('interpreter', i)
 
-  call s:let_codi('extmarks', {})
-
   " Save bufnr
   let bufnr = bufnr('%')
 
   " Save settings to restore later
   let winnr = winnr()
   let restore = 'call s:unlet_codi("restore")'
-  let restore .= ' | call s:unlet_codi("extmarks")'
   for opt in ['scrollbind', 'cursorbind', 'wrap', 'foldenable']
     if exists('&'.opt)
       let val = getwinvar(winnr, '&'.opt)
