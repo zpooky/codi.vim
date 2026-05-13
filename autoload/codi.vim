@@ -240,6 +240,15 @@ function! s:ch_get_id(ch)
   let id = substitute(a:ch, '^channel \(\d\+\) \(open\|closed\)$', '\1', '')
 endfunction
 
+function! s:cleanup_async_state(id)
+  if has_key(s:async_data, a:id)
+    unlet s:async_data[a:id]
+  endif
+  if exists('s:nvim_async_lines') && has_key(s:nvim_async_lines, a:id)
+    unlet s:nvim_async_lines[a:id]
+  endif
+endfunction
+
 " Stop the job and clear it from the process table.
 function! s:stop_job_for_buf(buf, ...)
   try
@@ -357,20 +366,42 @@ function! s:codi_autoclose()
 endfunction
 
 function! s:codi_kill()
-  " If we already have a codi instance for the buffer, kill it
-  let codi_bufnr = s:get_codi('bufnr')
-  if codi_bufnr
-    call s:user_au('CodiLeavePre')
-    " Clear autocommands
-    exe 'augroup CODI_TARGET_'.bufnr('%')
-      au!
-    augroup END
-    exe s:get_codi('restore')
+  " Kill active Codi state for current target buffer.
+  let codi = s:get_codi_dict()
+  if !has_key(codi, 'interpreter') && !has_key(codi, 'bufnr')
+    return
+  endif
+
+  if has_key(codi, 'bufnr')
+    let codi_bufnr = codi['bufnr']
+  else
+    let codi_bufnr = 0
+  endif
+
+  call s:user_au('CodiLeavePre')
+  " Clear autocommands
+  exe 'augroup CODI_TARGET_'.bufnr('%')
+    au!
+  augroup END
+
+  " Stop asynchronous process, if any.
+  call s:stop_job_for_buf(bufnr('%'))
+
+  if has_key(codi, 'restore')
+    exe codi['restore']
+  endif
+  if has_key(codi, 'interpreter')
     call s:unlet_codi('interpreter')
+  endif
+  if codi_bufnr
     call s:unlet_codi('bufnr')
     exe 'keepjumps keepalt bdel! '.codi_bufnr
-    call s:user_au('CodiLeavePost')
   endif
+  if s:is_virtual_text_enabled()
+    call s:nvim_codi_clear_virtual_text()
+  endif
+
+  call s:user_au('CodiLeavePost')
 endfunction
 
 " Trigger autocommands and silently update
@@ -428,6 +459,7 @@ function! s:codi_do_update()
             \ 'pty': 1,
             \ 'on_stdout': function('s:codi_nvim_callback'),
             \ 'on_stderr': function('s:codi_nvim_callback'),
+            \ 'on_exit': function('s:codi_nvim_on_exit'),
             \ 'env': {'SHELL': 'sh'}
             \}
       if opt_use_buffer_dir
@@ -481,6 +513,13 @@ endfunction
 " Callback to handle output (nvim)
 let s:nvim_async_lines = {} " to hold partially built lines
 function! s:codi_nvim_callback(job_id, data, event)
+  if type(a:data) != v:t_list
+    return
+  endif
+
+  if !has_key(s:async_data, a:job_id)
+    return
+  endif
 
   " Initialize storage
   if !has_key(s:nvim_async_lines, a:job_id)
@@ -488,6 +527,10 @@ function! s:codi_nvim_callback(job_id, data, event)
   endif
 
   for line in a:data
+    if !has_key(s:nvim_async_lines, a:job_id)
+      break
+    endif
+
     let s:nvim_async_lines[a:job_id] .= line
 
     " If we hit a newline, we're ready to handle the data
@@ -501,6 +544,10 @@ function! s:codi_nvim_callback(job_id, data, event)
       endtry
     endif
   endfor
+endfunction
+
+function! s:codi_nvim_on_exit(job_id, code, event)
+  call s:cleanup_async_state(a:job_id)
 endfunction
 
 " Callback to handle output (vim)
@@ -667,10 +714,14 @@ endfunction
 
 function! s:virtual_text_codi_handle_done(bufnr, output)
   let s:updating = 1
-  let interpreter = s:get_codi('interpreter')
-  let num_lines = line('$')
-  let result = s:preprocess_and_parse(a:output, interpreter, num_lines)
-  call s:nvim_codi_output_to_virtual_text(a:bufnr, result)
+  try
+    let interpreter = s:get_codi('interpreter')
+    let num_lines = line('$')
+    let result = s:preprocess_and_parse(a:output, interpreter, num_lines)
+    call s:nvim_codi_output_to_virtual_text(a:bufnr, result)
+  finally
+    let s:updating = 0
+  endtry
 endfunction
 
 function! s:nvim_codi_clear_virtual_text()
